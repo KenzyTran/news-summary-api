@@ -12,26 +12,34 @@ sudo apt update && sudo apt upgrade -y
 
 # Install Python and pip if not already installed
 echo "🐍 Installing Python and pip..."
-sudo apt install -y python3 python3-pip python3-venv
+sudo apt install -y python3 python3-pip python3-venv python3-full
 
 # Install Node.js and npm for Playwright
 echo "📦 Installing Node.js and npm..."
 curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
-# Install uvx (for mcp-server-fetch)
-echo "📦 Installing uvx..."
-pip3 install --user uvx
+# Install uv (which includes uvx)
+echo "📦 Installing uv (includes uvx)..."
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 
 # Create application directory
 APP_DIR="/opt/news-summary-api"
 echo "📁 Creating application directory: $APP_DIR"
 sudo mkdir -p $APP_DIR
-sudo chown $USER:$USER $APP_DIR
 
-# Copy application files
+# Copy application files (excluding .git directory)
 echo "📋 Copying application files..."
-cp -r . $APP_DIR/
+rsync -av --exclude='.git' --exclude='__pycache__' --exclude='*.pyc' . $APP_DIR/ || {
+    echo "rsync not available, using cp with exclusions..."
+    find . -type f -not -path './.git/*' -not -name '*.pyc' -not -path './__pycache__/*' -exec cp --parents {} $APP_DIR/ \;
+}
+
+# Change ownership
+sudo chown -R $USER:$USER $APP_DIR
+
 cd $APP_DIR
 
 # Create virtual environment
@@ -39,17 +47,33 @@ echo "🔧 Creating virtual environment..."
 python3 -m venv venv
 source venv/bin/activate
 
+# Create requirements.txt without version conflicts
+echo "📝 Creating compatible requirements.txt..."
+cat > requirements.txt << 'EOF'
+fastapi
+uvicorn
+pydantic
+python-dotenv
+httpx
+aiofiles
+requests
+openai
+anthropic
+agents
+EOF
+
 # Install Python dependencies
 echo "📦 Installing Python dependencies..."
+pip install --upgrade pip
 pip install -r requirements.txt
 
-# Install Playwright
-echo "🎭 Installing Playwright..."
-npm install -g @playwright/mcp@latest
+# Install Playwright MCP server with sudo
+echo "🎭 Installing Playwright MCP server..."
+sudo npm install -g @playwright/mcp@latest
 
 # Install Playwright browsers
 echo "🌐 Installing Playwright browsers..."
-npx playwright install
+sudo npx playwright install
 
 # Create systemd service file
 echo "⚙️ Creating systemd service..."
@@ -62,7 +86,7 @@ After=network.target
 Type=simple
 User=$USER
 WorkingDirectory=$APP_DIR
-Environment=PATH=$APP_DIR/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=$APP_DIR/venv/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=$APP_DIR/venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=10
@@ -71,10 +95,20 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-# Create .env file from example
+# Create .env file
 echo "📝 Creating environment file..."
 if [ ! -f .env ]; then
-    cp .env.example .env
+    if [ -f .env.example ]; then
+        cp .env.example .env
+    else
+        cat > .env << 'ENVEOF'
+OPENAI_API_KEY=sk-your-openai-api-key
+ANTHROPIC_API_KEY=sk-ant-your-anthropic-api-key
+HOST=0.0.0.0
+PORT=8000
+LOG_LEVEL=INFO
+ENVEOF
+    fi
     echo "⚠️  Please edit .env file and add your API keys!"
 fi
 
@@ -85,7 +119,7 @@ sudo apt install -y nginx
 sudo tee /etc/nginx/sites-available/news-summary-api > /dev/null <<EOF
 server {
     listen 80;
-    server_name your_domain.com;  # Replace with your domain
+    server_name _;  # Accept any domain
     
     location / {
         proxy_pass http://127.0.0.1:8000;
@@ -118,10 +152,9 @@ echo "✅ Deployment completed!"
 echo ""
 echo "📋 Post-deployment checklist:"
 echo "1. Edit $APP_DIR/.env and add your OpenAI/Anthropic API keys"
-echo "2. Update server_name in /etc/nginx/sites-available/news-summary-api"
-echo "3. Restart services: sudo systemctl restart news-summary-api nginx"
-echo "4. Check service status: sudo systemctl status news-summary-api"
-echo "5. View logs: sudo journalctl -u news-summary-api -f"
+echo "2. Test API: curl http://localhost:8000/health"
+echo "3. Check service status: sudo systemctl status news-summary-api"
+echo "4. View logs: sudo journalctl -u news-summary-api -f"
 echo ""
-echo "🌐 API will be available at: http://your_domain.com"
-echo "📖 API documentation: http://your_domain.com/docs"
+echo "🌐 API will be available at: http://your_server_ip"
+echo "📖 API documentation: http://your_server_ip/docs"
